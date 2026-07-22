@@ -1,1 +1,48 @@
+name: Delete Stale Branches
 
+on:
+  schedule:
+    # Run every 5 minutes
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  delete-stale-branches:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Delete branches older than 10 minutes
+        run: |
+          # Get current time
+          CURRENT_TIME=$(date +%s)
+          STALE_THRESHOLD=$((10 * 60))  # 10 minutes in seconds
+          
+          # Get all branches
+          git fetch --all
+          
+          # Iterate through all branches except main
+          for branch in $(git branch -r | grep -v 'origin/HEAD\|origin/main' | sed 's|origin/||'); do
+            # Get the commit timestamp for the branch
+            COMMIT_TIME=$(git log -1 --format=%ct origin/$branch)
+            TIME_DIFF=$((CURRENT_TIME - COMMIT_TIME))
+            
+            # Convert to minutes for logging
+            TIME_DIFF_MINUTES=$((TIME_DIFF / 60))
+            
+            # Check if branch is older than 10 minutes
+            if [ $TIME_DIFF -gt $STALE_THRESHOLD ]; then
+              echo "Deleting branch '$branch' (last commit: $TIME_DIFF_MINUTES minutes ago)"
+              git push origin --delete $branch
+            else
+              echo "Keeping branch '$branch' (last commit: $TIME_DIFF_MINUTES minutes ago)"
+            fi
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
