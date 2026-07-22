@@ -1,0 +1,92 @@
+name: Delete Stale Branches
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    # Run every 5 minutes (you may want to increase this)
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Set to "false" to actually delete branches. Default "true" (dry-run).'
+        required: false
+        default: 'true'
+
+jobs:
+  delete-stale-branches:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    env:
+      # default dry-run value (can be overridden via workflow_dispatch input)
+      DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+      # space-separated protected branches (never delete these)
+      PROTECTED_BRANCHES: "main develop release"
+      # threshold in minutes
+      STALE_THRESHOLD_MINUTES: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Delete branches older than threshold (safe)
+        run: |
+          set -euo pipefail
+          CURRENT_TIME=$(date +%s)
+          STALE_THRESHOLD=$(( STALE_THRESHOLD_MINUTES * 60 ))
+
+          # Build protected branch grep pattern
+          PROTECTED_PATTERN=""
+          for b in $PROTECTED_BRANCHES; do
+            if [ -z "$PROTECTED_PATTERN" ]; then
+              PROTECTED_PATTERN="^origin/$b$"
+            else
+              PROTECTED_PATTERN="$PROTECTED_PATTERN\|^origin/$b$"
+            fi
+          done
+
+          echo "DRY_RUN=${DRY_RUN}"
+          echo "Protected branches: $PROTECTED_BRANCHES"
+          echo "Stale threshold (minutes): $STALE_THRESHOLD_MINUTES"
+
+          # Fetch remote branches metadata
+          git fetch --all --prune
+
+          # List remote branches, filter out HEAD and protected branches
+          for remote_ref in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin | grep -v 'origin/HEAD'); do
+            branch=${remote_ref#origin/}
+            # Skip protected branches
+            if echo "origin/$branch" | grep -Eq "$PROTECTED_PATTERN"; then
+              echo "Skipping protected branch: $branch"
+              continue
+            fi
+
+            # Get commit timestamp for branch
+            COMMIT_TIME=$(git log -1 --format=%ct origin/$branch 2>/dev/null || echo 0)
+
+            if [ "$COMMIT_TIME" = "0" ]; then
+              echo "Could not get commit time for $branch (skipping)"
+              continue
+            fi
+
+            TIME_DIFF=$(( CURRENT_TIME - COMMIT_TIME ))
+            TIME_DIFF_MIN=$(( TIME_DIFF / 60 ))
+
+            if [ $TIME_DIFF -gt $STALE_THRESHOLD ]; then
+              if [ "$DRY_RUN" = "true" ] || [ "$DRY_RUN" = "True" ]; then
+                echo "[DRY-RUN] Would delete branch '$branch' (last commit: $TIME_DIFF_MIN minutes ago)"
+              else
+                echo "Deleting branch '$branch' (last commit: $TIME_DIFF_MIN minutes ago)"
+                # Attempt to delete, ignore failure for protected/permission issues
+                git push origin --delete "$branch" || echo "Failed to delete $branch (may be protected or already deleted)"
+              fi
+            else
+              echo "Keeping branch '$branch' (last commit: $TIME_DIFF_MIN minutes ago)"
+            fi
+          done
+        shell: bash
